@@ -4,9 +4,6 @@ import pandas as pd
 import requests
 import dotenv
 from datetime import datetime, timedelta
-from openpyxl import Workbook
-from openpyxl.styles import Font, Border
-from openpyxl.styles.borders import Border, Side
 
 dotenv.load_dotenv()
 
@@ -29,6 +26,8 @@ paramsStock = {'dateFrom': dateFrom}
 paramsIncome = {'dateFrom': dateFrom}
 date_from_obj = datetime.strptime(dateFrom, '%Y-%m-%d').date()
 date_to_obj = date_from_obj + timedelta(days=7)
+
+
 
 
 async def get_data(url, headers, params):
@@ -58,6 +57,8 @@ async def generate_json():
 
 
 async def process_orders_data(data, date_from, date_to):
+    with open('config.json', 'r') as config_json:
+        config = json.load(config_json)
     order = {}
     for items in data:
         date = items['date']
@@ -73,13 +74,12 @@ async def process_orders_data(data, date_from, date_to):
             else:
                 order[article] = {'count': 1}
 
-    # print(json.dumps(order, indent=4))
 
     for key in order:
         order[key]['count'] //= 7
 
     for article in order:
-        order[article]['incrise'] = int(round(order[article]['count'] * 1.15))
+        order[article]['incrise'] = int(round(order[article]['count'] * config['increase_value_week_1']))
 
     return order
 
@@ -116,6 +116,28 @@ async def get_stock_with_income(stock, income):
     return stock
 
 
+async def stock_with_income_w2(orders_w2, percent_buy, stock_with_income_w1):
+    stock_with_income_w2 = {}
+    income_w2 = {}
+    for article in orders_w2:
+        stock_with_income_w2[article] = {'toClient': orders_w2[article]['count'] * 7,
+                                         'fromClient': 0,
+                                         'fullQuantity': 0,
+                                         'quantityWithIncome': 0}
+        stock_with_income_w2[article]['fromClient'] = round(stock_with_income_w2[article]['toClient'] * percent_buy[article]['percent'], 0)
+        income_w2[article] = {'quantity': 0}
+        for items in stock_with_income_w1:
+            if article == items:
+                if stock_with_income_w1[items]['quantityWithIncome'] < orders_w2[article]['incrise'] * 7 :
+                    stock_with_income_w2[article]['fullQuantity'] = 0
+                else:
+                    stock_with_income_w2[article]['fullQuantity'] = stock_with_income_w1[items]['quantityWithIncome'] - (orders_w2[article]['incrise'] * 7)
+        stock_with_income_w2[article]['quantityWithIncome'] = stock_with_income_w2[article]['fullQuantity'] + stock_with_income_w2[article]['fromClient'] + income_w2[article]['quantity']
+
+
+    return stock_with_income_w2, income_w2
+
+
 async def get_incomes(data, stock, dateFrom, dateTo):
     income = {}
     for items in data:
@@ -139,6 +161,8 @@ async def get_incomes(data, stock, dateFrom, dateTo):
 
 
 async def order_w2_2(order_w1):
+    with open('config.json', 'r') as config_json:
+        config = json.load(config_json)
     order_w2 = {}
     for article in order_w1:
         if article not in order_w2:
@@ -147,7 +171,7 @@ async def order_w2_2(order_w1):
                                  'order7Days': 0, }
 
     for article in order_w2:
-        order_w2[article]['incrise'] = int(round(order_w2[article]['incrise'] * 1.3))
+        order_w2[article]['incrise'] = int(round(order_w2[article]['incrise'] * config['increase_value_week_2']))
         order_w2[article]['order7Days'] = order_w2[article]['incrise'] * 7
 
     return order_w2
@@ -195,6 +219,8 @@ async def percent_buy(data_orders, data_sales, date_from, date_to):
 
 
 async def initialize():
+    with open('config.json', 'r') as config_json:
+        config = json.load(config_json)
     with open("json_files/orders_data.json", "r") as orders_data_file, \
             open("json_files/stock_data.json", "r") as stock_data_file, \
             open("json_files/income_data.json", "r") as income_data_file, \
@@ -212,25 +238,39 @@ async def initialize():
     order, income, stock_income = await sort_data(order, income, stock_income)
     order_w2 = await order_w2_2(order)
     percent_buy1 = await percent_buy(orders_data, sales_data, date_from_obj, date_to_obj)
+    stock_with_income_w2_2, income_w2 = await stock_with_income_w2(order_w2, percent_buy1, stock_income)
 
     df1 = pd.DataFrame(order).T
     sheet_name = 'Orders w1'
     df1 = df1.rename(columns={'count': 'Заказы',
-                              'incrise': 'Ув 15%'})
+                              'incrise': f'Ув {str(config['increase_percent_week_1'])}%'})
 
     df2 = pd.DataFrame(stock_income).T
-    sheet_nameLeftOvers = 'Leftovers, in transit, etc w1'
+    sheet_nameLeftOversW1 = 'Leftovers, in transit, etc w1'
     df2 = df2.rename(columns={'toClient': 'В пути до клиента',
                               'fromClient': 'В пути от клиента',
                               'fullQuantity': 'Остатки на складе',
                               'quantityWithIncome': 'Остатки на складе с учетом поступлений'})
+
     df3 = pd.DataFrame(income).T
     df3 = df3.rename(columns={'quantity': 'Поступления'})
+
     df4 = pd.DataFrame(order_w2).T
     sheet_orders_w2 = 'Orders w2'
     df4 = df4.rename(columns={'count': 'Заказы были',
-                              'incrise': 'Ув 30%',
+                              'incrise': f'Ув {str(config['increase_percent_week_2'])}%',
                               'order7Days': 'Заказы за 7 дней'})
+
+    df6 = pd.DataFrame(stock_with_income_w2_2).T
+    sheet_nameLeftOversW2 = 'Leftovers, in transit, etc w2'
+    df6 = df6.rename(columns={'toClient': 'В пути до клиента',
+                              'fromClient': 'В пути от клиента',
+                              'fullQuantity': 'Остатки на складе',
+                              'quantityWithIncome': 'Остатки на складе с учетом поступлений'})
+
+    df7 = pd.DataFrame(income_w2).T
+    df7 = df7.rename(columns={'quantity': 'Поступления'})
+
     df5 = pd.DataFrame(percent_buy1).T
     sheet_percent_buy = 'Таблица выкупа артикулов'
     df5 = df5.rename(columns={'count_orders': 'Количество заказов за 7д',
@@ -239,14 +279,22 @@ async def initialize():
 
     with pd.ExcelWriter('data.xlsx', engine='openpyxl') as writer:
         df1.to_excel(writer, sheet_name=sheet_name, startcol=1, startrow=1, index_label='Артикул')
-        df2.to_excel(writer, sheet_name=sheet_nameLeftOvers, startcol=1, startrow=1, index_label='Артикул')
-        df3.to_excel(writer, sheet_name=sheet_nameLeftOvers, startcol=8, startrow=1, index_label='Артикул')
+
+        df2.to_excel(writer, sheet_name=sheet_nameLeftOversW1, startcol=1, startrow=1, index_label='Артикул')
+        df3.to_excel(writer, sheet_name=sheet_nameLeftOversW1, startcol=8, startrow=1, index_label='Артикул')
+
         df4.to_excel(writer, sheet_name=sheet_orders_w2, startcol=1, startrow=1, index_label='Артикул')
+
         df5.to_excel(writer, sheet_name=sheet_percent_buy, startcol=1, startrow=1, index_label='Артикул')
+
+        df6.to_excel(writer, sheet_name=sheet_nameLeftOversW2, startcol=1, startrow=1, index_label='Артикул')
+        df7.to_excel(writer, sheet_name=sheet_nameLeftOversW2, startcol=8, startrow=1, index_label='Артикул')
+
         workbook = writer.book
         worksheet1 = writer.sheets[sheet_name]
-        worksheet2 = writer.sheets[sheet_nameLeftOvers]
+        worksheet2 = writer.sheets[sheet_nameLeftOversW1]
         worksheet3 = writer.sheets[sheet_orders_w2]
+        worksheet5 = writer.sheets[sheet_nameLeftOversW2]
         worksheet4 = writer.sheets[sheet_percent_buy]
 
         worksheet1.column_dimensions['B'].width = 25
@@ -261,7 +309,12 @@ async def initialize():
         for column, width in columnWight.items():
             worksheet2.column_dimensions[column].width = width
             worksheet3.column_dimensions[column].width = width
+            worksheet5.column_dimensions[column].width = width
             worksheet4.column_dimensions[column].width = width
 
-    # print(json.dumps(order, indent=3))
-    # print(json.dumps(order_w2, indent=3))
+
+
+
+
+
+

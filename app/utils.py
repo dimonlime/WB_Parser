@@ -11,6 +11,7 @@ urlOrder = os.getenv('URL_ORDER')
 urlSale = os.getenv('URL_SALE')
 urlStock = os.getenv('URL_STOCK')
 urlIncome = os.getenv('URL_INCOME')
+data_dollar_rate = requests.get('https://www.cbr-xml-daily.ru/daily_json.js').json()
 
 token = os.getenv('WB_TOKEN')
 
@@ -26,8 +27,7 @@ paramsStock = {'dateFrom': dateFrom}
 paramsIncome = {'dateFrom': dateFrom}
 date_from_obj = datetime.strptime(dateFrom, '%Y-%m-%d').date()
 date_to_obj = date_from_obj + timedelta(days=7)
-
-
+dollar_rate = data_dollar_rate['Valute']['USD']['Value']
 
 
 async def get_data(url, headers, params):
@@ -47,13 +47,13 @@ async def generate_json():
     income_data = await get_data(urlIncome, headers, paramsIncome)
     sales_data = await get_data(urlSale, headers, paramsSales)
     with open("json_files/orders_data.json", "w") as orders:
-        json.dump(orders_data, orders)
+        json.dump(orders_data, orders, indent=4)
     with open("json_files/stock_data.json", "w") as stock:
-        json.dump(stock_data, stock)
+        json.dump(stock_data, stock, indent=4)
     with open("json_files/income_data.json", "w") as income:
-        json.dump(income_data, income)
+        json.dump(income_data, income, indent=4)
     with open("json_files/sales_data.json", "w") as sales:
-        json.dump(sales_data, sales)
+        json.dump(sales_data, sales, indent=4)
 
 
 async def process_orders_data(data, date_from, date_to):
@@ -74,12 +74,11 @@ async def process_orders_data(data, date_from, date_to):
             else:
                 order[article] = {'count': 1}
 
-
     for key in order:
         order[key]['count'] //= 7
 
     for article in order:
-        order[article]['incrise'] = int(round(order[article]['count'] * config['increase_value_week_1']))
+        order[article]['incrise'] = int(round(order[article]['count'] * config['Settings']['increase_value_week_1']))
 
     return order
 
@@ -124,16 +123,20 @@ async def stock_with_income_w2(orders_w2, percent_buy, stock_with_income_w1):
                                          'fromClient': 0,
                                          'fullQuantity': 0,
                                          'quantityWithIncome': 0}
-        stock_with_income_w2[article]['fromClient'] = round(stock_with_income_w2[article]['toClient'] * percent_buy[article]['percent'], 0)
+        stock_with_income_w2[article]['fromClient'] = round(
+            stock_with_income_w2[article]['toClient'] * percent_buy[article]['percent'], 0)
         income_w2[article] = {'quantity': 0}
         for items in stock_with_income_w1:
             if article == items:
-                if stock_with_income_w1[items]['quantityWithIncome'] < orders_w2[article]['incrise'] * 7 :
+                if stock_with_income_w1[items]['quantityWithIncome'] < orders_w2[article]['incrise'] * 7:
                     stock_with_income_w2[article]['fullQuantity'] = 0
                 else:
-                    stock_with_income_w2[article]['fullQuantity'] = stock_with_income_w1[items]['quantityWithIncome'] - (orders_w2[article]['incrise'] * 7)
-        stock_with_income_w2[article]['quantityWithIncome'] = stock_with_income_w2[article]['fullQuantity'] + stock_with_income_w2[article]['fromClient'] + income_w2[article]['quantity']
-
+                    stock_with_income_w2[article]['fullQuantity'] = stock_with_income_w1[items][
+                                                                        'quantityWithIncome'] - (
+                                                                            orders_w2[article]['incrise'] * 7)
+        stock_with_income_w2[article]['quantityWithIncome'] = stock_with_income_w2[article]['fullQuantity'] + \
+                                                              stock_with_income_w2[article]['fromClient'] + \
+                                                              income_w2[article]['quantity']
 
     return stock_with_income_w2, income_w2
 
@@ -171,7 +174,8 @@ async def order_w2_2(order_w1):
                                  'order7Days': 0, }
 
     for article in order_w2:
-        order_w2[article]['incrise'] = int(round(order_w2[article]['incrise'] * config['increase_value_week_2']))
+        order_w2[article]['incrise'] = int(
+            round(order_w2[article]['incrise'] * config['Settings']['increase_value_week_2']))
         order_w2[article]['order7Days'] = order_w2[article]['incrise'] * 7
 
     return order_w2
@@ -218,6 +222,48 @@ async def percent_buy(data_orders, data_sales, date_from, date_to):
     return orders_buy_percent
 
 
+async def general_indicators(dollar_rate):
+    oper_cycle = {'production': 12,
+                  'logistics': 7,
+                  'fulfillment': 4}
+
+    indicators = {'oper_cycle': oper_cycle['production'] + oper_cycle['logistics'] + oper_cycle['fulfillment'],
+                  'comission': 0.1,
+                  'dollar_rate': dollar_rate}
+
+    return oper_cycle, indicators
+
+
+async def formed_order(orders_w2, stock_with_income_w2, indicators):
+    order = {}
+    for article in orders_w2:
+        # Создаем временный словарь для хранения обновленных данных
+        temp_data = {}
+
+        # Проверяем условие и присваиваем значение для binary_order
+        if stock_with_income_w2[article]['quantityWithIncome'] < (
+                orders_w2[article]['count'] * indicators['oper_cycle']):
+            temp_data['binary_order'] = 1
+        else:
+            temp_data['binary_order'] = 0
+
+        # Вычисляем count_to_koledino в зависимости от binary_order
+        if temp_data['binary_order'] == 1:
+            temp_data['count_to_koledino'] = (orders_w2[article]['incrise'] * indicators['oper_cycle']) - \
+                                             stock_with_income_w2[article]['quantityWithIncome']
+        else:
+            temp_data['count_to_koledino'] = 0
+
+        # Вычисляем значение для incrise и total
+        temp_data['incrise'] = round(temp_data['count_to_koledino'] * 0.3, 0)
+        temp_data['total'] = temp_data['count_to_koledino'] + temp_data['incrise']
+
+        # Обновляем словарь order[article] с новыми значениями
+        order[article] = temp_data
+
+    return order
+
+
 async def initialize():
     with open('config.json', 'r') as config_json:
         config = json.load(config_json)
@@ -236,14 +282,20 @@ async def initialize():
 
     stock_income = await get_stock_with_income(stock, income)
     order, income, stock_income = await sort_data(order, income, stock_income)
+    config['Article'] = income
+    with open('config.json', 'w') as config_json:
+        json.dump(config, config_json, indent=4)
     order_w2 = await order_w2_2(order)
     percent_buy1 = await percent_buy(orders_data, sales_data, date_from_obj, date_to_obj)
     stock_with_income_w2_2, income_w2 = await stock_with_income_w2(order_w2, percent_buy1, stock_income)
 
+    general_indicators1, indicators = await general_indicators(dollar_rate)
+    formed_order1 = await formed_order(order_w2, stock_with_income_w2_2, indicators)
+
     df1 = pd.DataFrame(order).T
     sheet_name = 'Orders w1'
     df1 = df1.rename(columns={'count': 'Заказы',
-                              'incrise': f'Ув {str(config['increase_percent_week_1'])}%'})
+                              'incrise': f'Ув {config['Settings']['increase_percent_week_1']}%'})
 
     df2 = pd.DataFrame(stock_income).T
     sheet_nameLeftOversW1 = 'Leftovers, in transit, etc w1'
@@ -258,7 +310,7 @@ async def initialize():
     df4 = pd.DataFrame(order_w2).T
     sheet_orders_w2 = 'Orders w2'
     df4 = df4.rename(columns={'count': 'Заказы были',
-                              'incrise': f'Ув {str(config['increase_percent_week_2'])}%',
+                              'incrise': f'Ув {config['Settings']['increase_percent_week_2']}%',
                               'order7Days': 'Заказы за 7 дней'})
 
     df6 = pd.DataFrame(stock_with_income_w2_2).T
@@ -277,6 +329,24 @@ async def initialize():
                               'count_sales': 'Количество продаж за 7д',
                               'percent': 'Процент выкупа'})
 
+    df8 = pd.DataFrame([general_indicators1], index=['Значение']).T
+    df8 = df8.rename(index={'production': 'Производство',
+                            'logistics': 'Логистика',
+                            'fulfillment': 'Фулфилмент'})
+    sheet_general_indicators = 'Общие показатели'
+
+    df9 = pd.DataFrame([indicators], index=['Значение']).T
+    df9 = df9.rename(index={'oper_cycle': 'Операционный цикл',
+                            'comission': 'Комиссия подрядчика',
+                            'dollar_rate': 'Курс доллара / рубль'})
+
+    df10 = pd.DataFrame(formed_order1).T
+    df10 = df10.rename(columns={'binary_order': 'Бинарный заказ',
+                                'count_to_koledino': 'Сколько надо заказать направление Коледино',
+                                'incrise': '30%',
+                                'total': 'Итого'})
+    sheet_formed_order = 'Сформированный заказ'
+
     with pd.ExcelWriter('data.xlsx', engine='openpyxl') as writer:
         df1.to_excel(writer, sheet_name=sheet_name, startcol=1, startrow=1, index_label='Артикул')
 
@@ -285,17 +355,23 @@ async def initialize():
 
         df4.to_excel(writer, sheet_name=sheet_orders_w2, startcol=1, startrow=1, index_label='Артикул')
 
-        df5.to_excel(writer, sheet_name=sheet_percent_buy, startcol=1, startrow=1, index_label='Артикул')
-
         df6.to_excel(writer, sheet_name=sheet_nameLeftOversW2, startcol=1, startrow=1, index_label='Артикул')
         df7.to_excel(writer, sheet_name=sheet_nameLeftOversW2, startcol=8, startrow=1, index_label='Артикул')
 
+        df5.to_excel(writer, sheet_name=sheet_percent_buy, startcol=1, startrow=1, index_label='Артикул')
+
+        df9.to_excel(writer, sheet_name=sheet_general_indicators, startcol=1, startrow=1, index_label='Показатель')
+        df8.to_excel(writer, sheet_name=sheet_general_indicators, startcol=8, startrow=1, index_label='Показатель')
+
+        df10.to_excel(writer, sheet_name=sheet_formed_order, startcol=1, startrow=1, index_label='Артикул')
         workbook = writer.book
         worksheet1 = writer.sheets[sheet_name]
         worksheet2 = writer.sheets[sheet_nameLeftOversW1]
         worksheet3 = writer.sheets[sheet_orders_w2]
         worksheet5 = writer.sheets[sheet_nameLeftOversW2]
         worksheet4 = writer.sheets[sheet_percent_buy]
+        worksheet6 = writer.sheets[sheet_general_indicators]
+        worksheet7 = writer.sheets[sheet_formed_order]
 
         worksheet1.column_dimensions['B'].width = 25
         columnWight = {'B': 25,
@@ -311,10 +387,5 @@ async def initialize():
             worksheet3.column_dimensions[column].width = width
             worksheet5.column_dimensions[column].width = width
             worksheet4.column_dimensions[column].width = width
-
-
-
-
-
-
-
+            worksheet6.column_dimensions[column].width = width
+            worksheet7.column_dimensions[column].width = width

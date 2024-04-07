@@ -54,10 +54,7 @@ async def update_incomes():
     order, stock_income, income = await compare_and_add_keys(order, stock_income, income)
     order, income, stock_income = await sort_data(order, income, stock_income)
     config['Article_week_1'] = income
-    order_w2 = await order_w2_2(order)
-    percent_buy1 = await percent_buy(orders_data, sales_data, date_from_obj, date_to_obj, order)
-    stock_with_income_w2_2, income_w2 = await stock_with_income_w2(order_w2, percent_buy1, stock_income)
-    config['Article_week_2'] = income_w2
+    config['Article_week_2'] = income
 
     with open('config.json', 'w', encoding='UTF-8') as config_json:
         json.dump(config, config_json, indent=4)
@@ -149,7 +146,9 @@ async def get_stock_with_income(stock, income):
 
 async def stock_with_income_w2(orders_w2, percent_buy, stock_with_income_w1):
     stock_with_income_w2 = {}
-    income_w2 = {}
+    with open('config.json', 'r') as config:
+        config = json.load(config)
+    income_w2 = config['Article_week_2']
     for article in orders_w2:
         stock_with_income_w2[article] = {'toClient': orders_w2[article]['count'] * 7,
                                          'fromClient': 0,
@@ -157,7 +156,6 @@ async def stock_with_income_w2(orders_w2, percent_buy, stock_with_income_w1):
                                          'quantityWithIncome': 0}
         stock_with_income_w2[article]['fromClient'] = round(
             stock_with_income_w2[article]['toClient'] * percent_buy[article]['percent'], 0)
-        income_w2[article] = {'quantity': 0}
         for items in stock_with_income_w1:
             if article == items:
                 if stock_with_income_w1[items]['quantityWithIncome'] < orders_w2[article]['incrise'] * 7:
@@ -402,7 +400,6 @@ async def initialize():
     percent_buy1 = await percent_buy(orders_data, sales_data, date_from_obj, date_to_obj, order)
 
     stock_with_income_w2_2, income_w2 = await stock_with_income_w2(order_w2, percent_buy1, stock_income)
-    income_w2 = config['Article_week_2']
 
     general_indicators1, indicators = await general_indicators(dollar_rate)
     formed_order1 = await formed_order(order_w2, stock_with_income_w2_2, indicators)
